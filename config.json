@@ -1,0 +1,58 @@
+{
+  "projection": {
+    "training": {
+      "loss_mode": "demo",
+      "demo_loss": "mse",
+      "production_loss": "infonce",
+      "production_min_batch": 1024,
+      "temperature": 0.07
+    },
+    "default_backend": "mlp",
+    "backends": [
+      "mlp",
+      "qformer"
+    ],
+    "note": "loss_mode=demo 用于极小规模快速验证（归一化 MSE 回归）；切 production 需确保 batch_size >= 1024 才能发挥 InfoNCE(ITC) 对比训练效果。"
+  },
+  "architecture": {
+    "layer": "② 投影层",
+    "role": "连接感知编码器(SigLIP/DINOv2/SenseVoice)与 MiniMind 大脑层的桥梁：语义对齐 + 长度控制",
+    "integration": "encoder.encode() -> projector.forward() -> llm_bridge.generate()",
+    "note": "detector.detect() 产出结构化元素(bbox/类/OCR文字)，不产特征张量；真实视觉特征由 perception/encoder.py 的 RealScreenEncoder.encode() 产出，喂给投影层。两者职责分清。"
+  },
+  "runtime": {
+    "use_real": false,
+    "auto_execute": false,
+    "visual_backend": "screenparser",
+    "capture_source": "screen",
+    "llm_backend": "openai",
+    "llm_model": "hy3",
+    "llm_base_url": "https://tokenhub.tencentmaas.com/v1",
+    "llm_api_key_env": "MGA_LLM_API_KEY",
+    "note_llm": "P0 起大脑改用外部大模型（OpenAI 兼容接口），不再依赖 26M 的 MiniMind 自训模型。llm_model=模型名；llm_base_url=接口地址（留空则读环境变量 MGA_LLM_BASE_URL）；密钥只从环境变量 MGA_LLM_API_KEY 读，绝不写进本文件或命令行。用法：--llm openai --llm-model hy3 --llm-base-url <服务地址>。",
+    "track_text": "确定",
+    "note_track_text": "① 感知层跟踪的目标文字/类别名。System1 靠它的位移产生预测误差来触发关键帧，采不到轨迹多半是它没匹配上。注意：yolov8n 是 COCO 检测器，只会输出 laptop/mouse/person/chair 等英文类别，永远匹配不到『确定』这类中文 UI 文字——要跟踪真实 GUI 元素需换 ScreenParser 类 GUI 检测权重；用 COCO 权重做采集验证时可临时填 laptop/cell phone 等屏幕上确实存在的类别名。"
+  },
+  "exec": {
+    "dry_run": false,
+    "require_confirm": false,
+    "allowed_region": null,
+    "block_dangerous_text": false,
+    "block_dangerous_action": [],
+    "human_like": true,
+    "random_delay": [
+      0.02,
+      0.12
+    ],
+    "mouse_steps": [
+      3,
+      8
+    ],
+    "mouse_jitter": 3.0,
+    "type_jitter": 0.03,
+    "failsafe": true,
+    "stop_file": true,
+    "note_exec": "P1 起执行层全面放开：默认真执行、不弹确认、不限区域、不拦文本。约束全部是开关——想限制就改这里（allowed_region 填 [x1,y1,x2,y2]；block_dangerous_text 设 true；block_dangerous_action 填动作名如 [\"type\"]）。急停三道：① 鼠标甩屏幕左上角(pyautogui FAILSAFE) ② 项目根建一个 STOP 文件（删掉即恢复）③ guard.emergency_stop()。随机化：random_delay=动作前后随机延迟范围(秒)；mouse_steps/mouse_jitter=鼠标走带抖动的中间点数量与幅度；type_jitter=打字间隔抖动。全部为 0/false 即完全确定性执行。"
+  },
+  "llm_base_url": "https://tokenhub.tencentmaas.com/v1"
+}

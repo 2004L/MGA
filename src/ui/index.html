@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MGA 控制台</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --border:#30363d;
+  --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --accent-d:#1f6feb;
+  --ok:#3fb950; --danger:#f85149; --warn:#d29922;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button,input,select{font-family:inherit;font-size:inherit}
+
+/* ---------- header ---------- */
+header{
+  display:flex; align-items:center; gap:16px;
+  padding:14px 22px; border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,#161b22,#0d1117);
+}
+.logo{font-size:16px;font-weight:600;letter-spacing:.3px;display:flex;align-items:center;gap:9px}
+.logo .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.spacer{flex:1}
+
+.status{
+  display:flex; align-items:center; gap:9px;
+  padding:6px 14px; border:1px solid var(--border); border-radius:999px;
+  background:var(--panel); font-size:13px; color:var(--muted);
+}
+.status .led{width:8px;height:8px;border-radius:50%;background:var(--muted);transition:.25s}
+.status.run .led{background:var(--ok);box-shadow:0 0 8px var(--ok);animation:pulse 1.4s infinite}
+.status.run{color:var(--ok);border-color:#1f6f3f}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+.btn{
+  border:1px solid var(--border); background:var(--panel2); color:var(--text);
+  padding:8px 16px; border-radius:8px; cursor:pointer; transition:.18s; font-weight:500;
+}
+.btn:hover:not(:disabled){background:#262c36;border-color:#3d444d;transform:translateY(-1px)}
+.btn:active:not(:disabled){transform:translateY(0)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.primary{background:var(--accent-d);border-color:var(--accent-d);color:#fff}
+.btn.primary:hover:not(:disabled){background:#388bfd;border-color:#388bfd}
+.btn.danger{background:transparent;border-color:var(--danger);color:var(--danger)}
+.btn.danger:hover:not(:disabled){background:var(--danger);color:#fff}
+.btn.danger:disabled{opacity:.25}
+
+/* ---------- layout ---------- */
+.wrap{display:grid;grid-template-columns:284px 1fr;gap:18px;padding:18px 22px;align-items:start}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}}
+
+.card{
+  background:var(--panel); border:1px solid var(--border);
+  border-radius:12px; padding:16px; margin-bottom:16px;
+}
+.card h3{
+  margin:0 0 14px; font-size:13px; font-weight:600; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.8px;
+  display:flex;align-items:center;gap:8px;
+}
+.card h3 .tag{
+  font-size:10px;padding:1px 7px;border-radius:999px;background:var(--panel2);
+  border:1px solid var(--border);color:var(--muted);text-transform:none;letter-spacing:0;
+}
+
+.field{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px}
+.field label{font-size:13px;color:var(--muted);flex:1}
+.field input,.field select{
+  width:112px; background:var(--bg); border:1px solid var(--border); color:var(--text);
+  padding:6px 10px; border-radius:7px; transition:.18s; text-align:right;
+}
+.field input:focus,.field select:focus{outline:none;border-color:var(--accent)}
+.field.wide input{width:100%;text-align:left}
+
+.btn-row{margin-top:14px}
+.btn-row .btn{width:100%;padding:10px}
+
+.hint{font-size:12px;color:#6e7681;margin-top:9px;line-height:1.5}
+
+/* ---------- tabs ---------- */
+.tabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--border)}
+.tab{
+  padding:9px 18px; background:transparent;border:none;color:var(--muted);
+  cursor:pointer;border-bottom:2px solid transparent;transition:.18s;font-weight:500;
+}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab .badge{
+  display:inline-block;min-width:18px;padding:0 5px;margin-left:6px;
+  background:var(--danger);color:#fff;border-radius:999px;font-size:11px;line-height:18px;text-align:center;
+}
+
+.panel{display:none}
+.panel.active{display:block}
+
+/* ---------- log ---------- */
+.logbar{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.log-tools{display:flex;gap:8px;align-items:center;margin-left:auto}
+.chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;user-select:none}
+.chk input{accent-color:var(--accent)}
+
+.log{
+  background:#010409; border:1px solid var(--border); border-radius:9px;
+  padding:12px 14px; height:min(56vh,540px); overflow-y:auto;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  font-size:12.5px; line-height:1.75; white-space:pre-wrap; word-break:break-all;
+}
+.log:empty::after{content:"暂无日志。点左侧按钮开始。";color:#6e7681}
+.log .ln{display:block}
+.log .ln.err{color:var(--danger)}
+.log .ln.warn{color:var(--warn)}
+.log .ln.ok{color:var(--ok)}
+.log .ln.sys{color:var(--accent)}
+
+.empty{color:#6e7681;text-align:center;padding:40px 0;font-size:13px}
+
+#demoImg{width:100%;border-radius:9px;border:1px solid var(--border);display:block;background:#010409}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-bottom:11px}
+.legend b{font-weight:600}
+
+/* ---------- stats ---------- */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px}
+.stat{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.stat .v{font-size:24px;font-weight:600;letter-spacing:-.5px}
+.stat .k{font-size:12px;color:var(--muted);margin-top:2px}
+.stat.good .v{color:var(--ok)}
+.stat.bad .v{color:var(--danger)}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+td.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--muted)}
+tr:last-child td{border-bottom:none}
+
+.bars{display:flex;flex-direction:column;gap:7px}
+.bar{display:grid;grid-template-columns:130px 1fr 42px;gap:11px;align-items:center;font-size:12.5px}
+.bar .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.bar .track{background:var(--panel2);border-radius:4px;height:16px;overflow:hidden}
+.bar .fill{height:100%;background:linear-gradient(90deg,var(--accent-d),var(--accent));border-radius:4px;transition:width .4s}
+.bar .n{color:var(--muted);text-align:right}
+
+.toast{
+  position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(80px);
+  background:var(--panel2);border:1px solid var(--border);color:var(--text);
+  padding:11px 20px;border-radius:9px;opacity:0;transition:.28s;z-index:99;
+  box-shadow:0 8px 28px rgba(0,0,0,.5);font-size:13px;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{border-color:var(--danger);color:#ffb3ae}
+.toast.ok{border-color:var(--ok);color:#8ee79c}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><span class="dot"></span>MGA 控制台</div>
+  <div class="spacer"></div>
+  <div class="status" id="status"><span class="led"></span><span id="statusText">空闲</span></div>
+  <button class="btn danger" id="btnStop" disabled>■ 停止</button>
+</header>
+
+<div class="wrap">
+  <!-- ============ 左侧：一键操作 ============ -->
+  <aside>
+    <div class="card">
+      <h3>采集 <span class="tag">真实屏幕</span></h3>
+      <div class="field"><label>时长(分钟)</label><input type="number" id="pMinutes" value="31" min="1"></div>
+      <div class="field"><label>采样间隔(秒)</label><input type="number" id="pInterval" value="2" min="0" step="0.5"></div>
+      <div class="field"><label>OCR 缩放</label><input type="number" id="pOcr" value="0.5" min="0.1" max="1" step="0.1"></div>
+      <div class="field"><label>采集间隔(帧)</label><input type="number" id="pCollectEvery" value="1" min="1" step="1"></div>
+      <div class="btn-row"><button class="btn primary" data-kind="collect">▶ 开始采集</button></div>
+      <div class="hint">挂着它，你正常用电脑。屏幕越动，数据越多样。<br><b>合规全链路</b>（截图→ScreenParser→OCR→编码器→投影层），实测 ≈7.2s/帧，落盘 X_visual=[16,64]，数据可用于训练③ MiniMind。</div>
+    </div>
+
+    <div class="card">
+      <h3>训练 <span class="tag">LoRA</span></h3>
+      <div class="field"><label>epochs</label><input type="number" id="pEpochs" value="3" min="1"></div>
+      <div class="field"><label>max-len</label><input type="number" id="pMaxLen" value="1728" min="256" step="128"></div>
+      <div class="field"><label>batch</label><input type="number" id="pBatch" value="2" min="1"></div>
+      <div class="btn-row"><button class="btn primary" data-kind="train">▶ 开始训练</button></div>
+      <div class="hint">max-len 必须 ≥ prompt 实际长度（约 1550），否则全部截断。</div>
+    </div>
+
+    <div class="card">
+      <h3>Demo <span class="tag">看效果</span></h3>
+      <div class="field wide"><input type="text" id="pGoal" placeholder="目标名（留空=自动挑）"></div>
+      <div class="btn-row"><button class="btn" data-kind="demo">▶ 跑一次定位</button></div>
+      <div class="hint">截当前屏 → 模型定位 → 生成三色对比图。<br>先去「数据」页看有哪些真实目标名。</div>
+    </div>
+  </aside>
+
+  <!-- ============ 右侧：日志 / 数据 / 统计 ============ -->
+  <main>
+    <div class="tabs">
+      <button class="tab active" data-tab="log">实时日志<span class="badge" id="errBadge" style="display:none">0</span></button>
+      <button class="tab" data-tab="data">训练数据</button>
+      <button class="tab" data-tab="stats">统计</button>
+    </div>
+
+    <!-- 日志 -->
+    <section class="panel active" id="panel-log">
+      <div class="logbar">
+        <label class="chk"><input type="checkbox" id="onlyErr">只看错误</label>
+        <label class="chk"><input type="checkbox" id="autoScroll" checked>自动滚动</label>
+        <div class="log-tools">
+          <button class="btn" id="btnClear">清空</button>
+        </div>
+      </div>
+      <div class="log" id="log"></div>
+    </section>
+
+    <!-- 数据 -->
+    <section class="panel" id="panel-data">
+      <div class="card" id="demoCard" style="display:none">
+        <h3>最新 Demo 结果 <span class="tag">三色对比</span></h3>
+        <div class="legend">
+          <span><b style="color:#f85149">●红</b> 训练后预测</span>
+          <span><b style="color:#3d82f6">●蓝</b> 训练前(base)</span>
+          <span><b style="color:#3fb950">●绿+绿框</b> 真实元素中心</span>
+        </div>
+        <img id="demoImg" alt="Demo 三色对比结果">
+      </div>
+      <div class="grid" id="dataCards"></div>
+      <div class="card">
+        <h3>最近样本 <span class="tag">最新 8 条</span></h3>
+        <div id="recent"></div>
+      </div>
+    </section>
+
+    <!-- 统计 -->
+    <section class="panel" id="panel-stats">
+      <div class="card">
+        <h3>目标(goal)分布 <span class="tag">Top 15</span></h3>
+        <div class="bars" id="goalBars"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let since = 0, lastMtime = 0, rendered = [];
+
+function toast(msg, kind){
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "toast show" + (kind ? " " + kind : "");
+  clearTimeout(t._h);
+  t._h = setTimeout(()=>t.className = "toast", 2600);
+}
+
+function cls(line){
+  const s = line.toLowerCase();
+  if(/traceback|error|错误|失败|exception|!!/.test(s)) return "err";
+  if(/warn|警告|deprecat/.test(s)) return "warn";
+  if(/命中|完成|saved|保存|✅|ok\s/.test(s)) return "ok";
+  if(/^\[sys\]|^===|已(启动|停止|截取)/.test(line)) return "sys";
+  return "";
+}
+
+function renderLog(){
+  const onlyErr = $("#onlyErr").checked;
+  const box = $("#log");
+  box.innerHTML = "";
+  for(const l of rendered){
+    if(onlyErr && cls(l) !== "err") continue;
+    const d = document.createElement("span");
+    d.className = "ln " + cls(l);
+    d.textContent = l;
+    box.appendChild(d);
+  }
+  if($("#autoScroll").checked) box.scrollTop = box.scrollHeight;
+}
+
+async function pullLog(){
+  try{
+    const r = await fetch("/api/logs?since=" + since);
+    const j = await r.json();
+    if(j.lines && j.lines.length){
+      rendered = rendered.concat(j.lines);
+      if(rendered.length > 4000) rendered = rendered.slice(-4000);
+      since = j.total;
+      renderLog();
+    }
+    if(j.cleared){ rendered = []; since = 0; renderLog(); }
+  }catch(e){}
+}
+
+function statCard(v,k,cls){ return `<div class="stat ${cls||""}"><div class="v">${v}</div><div class="k">${k}</div></div>`; }
+
+async function pullStatus(){
+  try{
+    const r = await fetch("/api/status");
+    const j = await r.json();
+
+    // header
+    const st = $("#status"), txt = $("#statusText");
+    if(j.running){
+      st.className = "status run";
+      txt.textContent = `运行中 · ${j.kindLabel} · ${j.elapsed}`;
+    }else{
+      st.className = "status";
+      txt.textContent = "空闲";
+    }
+    $("#btnStop").disabled = !j.running;
+    document.querySelectorAll("[data-kind]").forEach(b=>b.disabled = j.running);
+
+    // error badge
+    const b = $("#errBadge");
+    if(j.errors > 0){ b.style.display = "inline-block"; b.textContent = j.errors; }
+    else b.style.display = "none";
+
+    // 最新 Demo 结果图（后端返回 /blobs/demo_xxx.png）
+    const dc = $("#demoCard"), di = $("#demoImg");
+    if(j.latest_demo){
+      dc.style.display = "block";
+      if(di.getAttribute("src") !== j.latest_demo) di.setAttribute("src", j.latest_demo);
+    }else{
+      dc.style.display = "none";
+    }
+
+    // data cards（仅数据变化时重绘）
+    if(j.stats && j.stats.mtime !== lastMtime){
+      lastMtime = j.stats.mtime;
+      const s = j.stats;
+      const div = s.n ? (s.unique_responses / s.n * 100) : 0;
+      $("#dataCards").innerHTML =
+        statCard(s.n, "轨迹条数") +
+        statCard(s.unique_responses, "唯一响应数") +
+        statCard(div.toFixed(0) + "%", "响应多样性", div < 5 ? "bad" : "good") +
+        statCard(s.unique_goals, "不同目标数");
+
+      $("#recent").innerHTML = (s.recent && s.recent.length)
+        ? `<table><thead><tr><th>#</th><th>目标 goal</th><th>预测坐标</th><th>响应</th></tr></thead><tbody>` +
+          s.recent.map(x=>`<tr><td class="mono">${x.i}</td><td>${esc(x.goal)}</td>
+            <td class="mono">[${x.coords}]</td><td class="mono">${esc(x.resp)}</td></tr>`).join("") +
+          `</tbody></table>`
+        : `<div class="empty">还没有数据。先跑一次采集。</div>`;
+
+      const gs = s.goal_top || [];
+      const max = gs.length ? gs[0][1] : 1;
+      $("#goalBars").innerHTML = gs.length
+        ? gs.map(([g,c])=>`<div class="bar"><div class="t" title="${esc(g)}">${esc(g)}</div>
+            <div class="track"><div class="fill" style="width:${(c/max*100).toFixed(1)}%"></div></div>
+            <div class="n">${c}</div></div>`).join("")
+        : `<div class="empty">暂无数据</div>`;
+    }
+  }catch(e){}
+}
+
+function esc(s){
+  return String(s==null?"":s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ---- 操作 ----
+async function start(kind){
+  const params = {};
+  if(kind === "collect"){
+    params.minutes = +$("#pMinutes").value;
+    params.interval = +$("#pInterval").value;
+    params.ocr_scale = +$("#pOcr").value;
+    params.collect_every = +($("#pCollectEvery").value || 1);
+  }else if(kind === "train"){
+    params.epochs = +$("#pEpochs").value;
+    params.max_len = +$("#pMaxLen").value;
+    params.batch = +$("#pBatch").value;
+  }else if(kind === "demo"){
+    params.goal = $("#pGoal").value.trim();
+  }
+  const r = await fetch("/api/start", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({kind, params})
+  });
+  const j = await r.json();
+  if(j.ok){ toast("已启动：" + j.kindLabel, "ok"); since = 0; }
+  else toast("启动失败：" + j.msg, "err");
+  pullStatus();
+}
+
+async function stop(){
+  const r = await fetch("/api/stop", {method:"POST"});
+  const j = await r.json();
+  toast(j.ok ? "已停止" : ("停止失败：" + j.msg), j.ok ? "ok" : "err");
+  pullStatus();
+}
+
+document.querySelectorAll("[data-kind]").forEach(b =>
+  b.onclick = () => start(b.dataset.kind));
+$("#btnStop").onclick = stop;
+$("#btnClear").onclick = async () => {
+  await fetch("/api/clear", {method:"POST"});
+  rendered = []; since = 0; renderLog();
+};
+$("#onlyErr").onchange = renderLog;
+
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+  document.querySelectorAll(".panel").forEach(x=>x.classList.remove("active"));
+  t.classList.add("active");
+  $("#panel-" + t.dataset.tab).classList.add("active");
+});
+
+setInterval(()=>{ pullStatus(); pullLog(); }, 1000);
+pullStatus(); pullLog();
+</script>
+</body>
+</html>
