@@ -27,7 +27,7 @@ from .types import Decision
 from .plan import Plan, Telemetry, _clamp_knob
 
 def _first_json(text: str):
-    """抠出第一个完整（支持嵌套）的 JSON 对象。比简单正则更稳：能处理 knobs 等嵌套结构。
+    r"""抠出第一个完整（支持嵌套）的 JSON 对象。比简单正则更稳：能处理 knobs 等嵌套结构。
 
     真 LLM / reasoner 的纠错/计划 JSON 常含 {"knobs":{"reaction":...}} 这类嵌套，
     简单正则 \{[^{}]*\} 会匹配失败 → 退回启发式。这里用括号计数+字符串转义感知提取。"""
