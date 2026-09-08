@@ -32,11 +32,16 @@ sam3_locator.py —— SAM3 开放词汇「概念分割」定位器
 from __future__ import annotations
 
 import atexit
+import base64
+import io
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import uuid
+import warnings
 from typing import List, Optional
 
 import numpy as np
@@ -87,14 +92,54 @@ def _default_worker_python() -> Optional[str]:
 
 
 def _to_pil(frame):
-    """frame 可以是路径(str) 或 numpy 数组 → 统一成 PIL.Image。"""
+    """frame 可以是路径(str) / base64 str / data-url str / numpy 数组 → 统一成 PIL.Image。
+
+    P0-1：支持 base64（data-url 或裸 b64），worker 模式直接用内存帧，不再落盘。
+    """
     from PIL import Image
     if isinstance(frame, str):
-        return Image.open(frame).convert("RGB")
+        if os.path.isfile(frame):
+            return Image.open(frame).convert("RGB")
+        # 尝试 base64（data:image/png;base64,xxxx 或裸 b64）
+        s = frame
+        if s.startswith("data:"):
+            s = s.split(",", 1)[1] if "," in s else s
+        try:
+            raw = base64.b64decode(s, validate=False)
+            return Image.open(io.BytesIO(raw)).convert("RGB")
+        except Exception:
+            return Image.open(frame).convert("RGB")  # 最后兜底（当成路径）
     if isinstance(frame, np.ndarray):
         return Image.fromarray(frame if frame.dtype == np.uint8
                                else frame.astype(np.uint8))
     return frame
+
+
+def _encode_b64(frame) -> str:
+    """把帧编码成 base64 PNG 字符串（P0-1：worker 模式内存传帧，不落盘）。"""
+    from PIL import Image
+    img = _to_pil(frame)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _cleanup_tmp(tmp_dir: str) -> int:
+    """清掉历史遗留的 sam3_frame_*.png（P0-1）。返回清理数量。"""
+    try:
+        if not os.path.isdir(tmp_dir):
+            return 0
+        n = 0
+        for fn in os.listdir(tmp_dir):
+            if fn.startswith("sam3_frame_") and fn.endswith(".png"):
+                try:
+                    os.remove(os.path.join(tmp_dir, fn))
+                    n += 1
+                except OSError:
+                    pass
+        return n
+    except Exception:
+        return 0
 
 
 class SAM3Locator(TargetLocator):
@@ -128,6 +173,13 @@ class SAM3Locator(TargetLocator):
         self._load_error: Optional[str] = None
         self.centroids: List[tuple] = []          # 与最近一次结果按索引对齐
 
+        # P0-2：worker 看门狗
+        self._reader: Optional[threading.Thread] = None
+        self._rq: "queue.Queue" = queue.Queue()   # reader 线程把 stdout 行塞进来
+        self._rq_closed = False                   # reader 已收到 EOF
+        self._rpc_timeout = 90.0                   # 单帧推理超时上限（秒）
+        self._warned_once = False                  # P1-5：降级告警只响一次
+
     # ---------------- 状态 ----------------
     @property
     def available(self) -> bool:
@@ -143,6 +195,32 @@ class SAM3Locator(TargetLocator):
     def mode(self) -> Optional[str]:
         """"direct"（同进程）/ "worker"（子进程）/ None（不可用）。"""
         return self._mode
+
+    @property
+    def is_alive(self) -> bool:
+        """worker 子进程是否还活着（P1-5：中途死掉上层能感知）。"""
+        if self._mode != "worker" or self._proc is None:
+            return self._mode == "direct"
+        return self._proc.poll() is None
+
+    def status(self) -> dict:
+        """P1-5：监控指标。available 是否可用、alive 进程是否存活、mode/error。"""
+        return {
+            "available": self.available if self._mode else False,
+            "alive": self.is_alive,
+            "mode": self._mode,
+            "error": self._load_error,
+        }
+
+    def _warn_once(self, msg: str):
+        """P1-5：降级只告警一次，走 stderr 不污染 worker 的 stdout JSON 协议。"""
+        if self._warned_once:
+            return
+        self._warned_once = True
+        try:
+            print(f"  [SAM3] {msg}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
 
     # ---------------- 加载 ----------------
     def _resolve_worker(self) -> Optional[str]:
@@ -173,8 +251,7 @@ class SAM3Locator(TargetLocator):
         if not self._load_error:
             self._load_error = (f"同进程加载失败（{direct_err}）；"
                                 f"worker 也不可用（{self._resolve_worker() or '未找到 .venv-sam3'}）")
-        if self.verbose:
-            print(f"  [SAM3] 不可用（降级）: {self._load_error}")
+        self._warn_once(f"不可用（降级到 YOLOE/闭集）: {self._load_error}")
         return False
 
     def _load_direct(self) -> bool:
@@ -237,13 +314,15 @@ class SAM3Locator(TargetLocator):
             if self.verbose:
                 print(f"  [SAM3] 启动常驻 worker（首次需加载模型，约 1~2 分钟）...",
                       flush=True)
+            # 清掉历史遗留的落盘帧（P0-1）
+            _cleanup_tmp(self.tmp_dir)
             proc = subprocess.Popen(
                 [py, WORKER_SCRIPT],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
                 bufsize=1, cwd=_ROOT,
             )
-            first = proc.stdout.readline()
+            first = proc.stdout.readline()        # 主线程收 ready 握手，避免被 reader 抢
             if not first:
                 proc.kill()
                 return False
@@ -254,6 +333,10 @@ class SAM3Locator(TargetLocator):
                 return False
             self._proc = proc
             self._mode = "worker"
+            self._rq = queue.Queue()
+            self._rq_closed = False
+            self._reader = threading.Thread(target=self._reader_loop, daemon=True)
+            self._reader.start()
             atexit.register(self.close)
             if self.verbose:
                 print("  [SAM3] worker 就绪(worker 模式)")
@@ -262,18 +345,59 @@ class SAM3Locator(TargetLocator):
             self._load_error = f"worker 启动异常: {type(e).__name__}: {e}"
             return False
 
+    def _reader_loop(self):
+        """P0-2：后台线程持续把 worker stdout 行塞进队列，EOF 时塞 None 作死信号。"""
+        try:
+            for line in self._proc.stdout:
+                self._rq.put(line)
+        except Exception:
+            pass
+        finally:
+            self._rq_closed = True
+            try:
+                self._rq.put(None)
+            except Exception:
+                pass
+
+    def _kill_worker(self):
+        """P0-2：强制杀掉卡死/已死的 worker，重置状态以便下次 rpc 重启。"""
+        self._mode = None
+        self._reader = None
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        try:
+            proc.kill()
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
     def close(self):
         """结束常驻 worker（atexit 会自动调）。"""
-        if self._proc and self._proc.poll() is None:
+        proc = self._proc
+        self._reader = None
+        self._mode = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
+                proc.stdin.flush()
+                proc.wait(timeout=5)
+        except Exception:
+            pass
+        if proc.poll() is None:
             try:
-                self._proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
-                self._proc.stdin.flush()
-                self._proc.wait(timeout=5)
+                proc.kill()
             except Exception:
-                try:
-                    self._proc.kill()
-                except Exception:
-                    pass
+                pass
         self._proc = None
 
     # ---------------- 定位 ----------------
@@ -309,37 +433,40 @@ class SAM3Locator(TargetLocator):
         self.centroids = cents
         return out
 
-    def _as_path(self, frame) -> str:
-        """worker 模式只能传路径；numpy 先落到 tmp（D 盘）。"""
-        if isinstance(frame, str):
-            return frame
-        os.makedirs(self.tmp_dir, exist_ok=True)
-        p = os.path.join(self.tmp_dir, f"sam3_frame_{uuid.uuid4().hex[:8]}.png")
-        _to_pil(frame).save(p)
-        return p
-
     def _worker_rpc(self, req: dict, retry: bool = True) -> Optional[dict]:
-        if not self._proc or self._proc.poll() is not None:
+        """P0-2：带超时 + 看门狗的 RPC。读行交给 reader 线程，主线程 queue.get 超时。
+        超时/进程死/EOL → 杀掉 worker 重启一次再试，避免永久阻塞冻住整个感知。"""
+        if self._proc is None or self._proc.poll() is not None:
             if not (retry and self._start_worker()):
                 return None
         try:
             self._proc.stdin.write(json.dumps(req) + "\n")
             self._proc.stdin.flush()
-            line = self._proc.stdout.readline()
-            if not line:                      # 进程死了 → 重启一次再试
+            try:
+                line = self._rq.get(timeout=self._rpc_timeout)
+            except queue.Empty:
+                # 超时：worker 卡死（GPU OOM/异常）→ 杀掉，重启再试一次
+                self._warn_once(f"worker 推理超时（>{self._rpc_timeout}s）已重启")
+                self._kill_worker()
+                if retry and self._start_worker():
+                    return self._worker_rpc(req, retry=False)
+                return None
+            if line is None:                  # reader 报 EOF：进程死了
+                self._kill_worker()
                 if retry and self._start_worker():
                     return self._worker_rpc(req, retry=False)
                 return None
             return json.loads(line)
         except Exception:
+            self._kill_worker()
             if retry and self._start_worker():
                 return self._worker_rpc(req, retry=False)
             return None
 
     def _worker_detect(self, frame, names: List[str]) -> List[Element]:
         try:
-            path = self._as_path(frame)
-            resp = self._worker_rpc({"cmd": "detect_named", "image": path,
+            img_b64 = _encode_b64(frame)      # P0-1：内存帧，不落盘
+            resp = self._worker_rpc({"cmd": "detect_named", "image_b64": img_b64,
                                      "names": names, "conf": self.conf})
             if not resp or not resp.get("ok"):
                 if self.verbose and resp:
@@ -398,7 +525,12 @@ class SAM3Locator(TargetLocator):
 
     @staticmethod
     def _mask_centroid(masks, i):
-        """mask 质心（像素坐标）。凹形/环形目标质心可能落在体外，调用方按场景取舍。"""
+        """mask 质心（像素坐标）。
+
+        P1-4：优先用 scipy 的 distance transform —— 取**最大连通分量**内离边界最远的
+        点，该点必然落在 mask **内部**，修掉凹形/环形目标用非零像素均值时质心被拉到
+        体外/洞外的问题。scipy 不可用或失败时回落到像素均值。
+        """
         try:
             m = masks[i]
             if hasattr(m, "detach"):
@@ -407,9 +539,25 @@ class SAM3Locator(TargetLocator):
             while m.ndim > 2:
                 m = m[0]
             m = m > 0.5
-            ys, xs = np.nonzero(m)
-            if len(xs) == 0:
+            if m.sum() == 0:
                 return None
+            try:
+                from scipy import ndimage as ndi
+                labeled, n = ndi.label(m)
+                if n >= 1:
+                    sizes = ndi.sum(np.ones_like(labeled), labeled,
+                                   index=range(1, n + 1))
+                    biggest = int(np.argmax(sizes)) + 1
+                    comp = (labeled == biggest)
+                    dt = ndi.distance_transform_edt(comp)
+                    # 取 dt 最大的单个像素（必在 mask 内）：并列最大点多时取 mean 会把
+                    # 坐标拉到凹形包围的空区中心而落到体外，故用 argmax 取第一个。
+                    flat = int(np.argmax(dt))
+                    y0, x0 = np.unravel_index(flat, dt.shape)
+                    return (int(x0), int(y0))
+            except Exception:
+                pass
+            ys, xs = np.nonzero(m)
             return (int(xs.mean()), int(ys.mean()))
         except Exception:
             return None

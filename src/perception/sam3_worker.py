@@ -90,7 +90,7 @@ def main() -> int:
                 continue
             if cmd == "detect_named":
                 names = req.get("names") or []
-                image = req.get("image")
+                image = req.get("image_b64") or req.get("image")  # P0-1：优先内存 b64
                 if not image or not names:
                     print(json.dumps({"ok": False,
                                       "error": "需要 image 与 names"}), flush=True)

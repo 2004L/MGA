@@ -119,10 +119,13 @@ def _try_yoloe_open(frame: np.ndarray, names=None, use_sam3: bool = True) -> Lis
 _SEM_CACHE: dict = {}
 
 
-def _get_semantic_locator(use_sam3: bool):
-    """懒初始化并缓存 SemanticLocator，确保 worker 只加载一次模型、跨帧复用。"""
+def _get_semantic_locator(use_sam3: bool, use_yoloe: bool = True):
+    """懒初始化并缓存 SemanticLocator，确保 worker 只加载一次模型、跨帧复用。
+
+    P1-6：key 用完整配置 tuple（含 use_yoloe），避免将来 toggle YOLOE 与 SAM3 配置串味。
+    """
     from detector import build_semantic_locator, TargetLocator
-    key = bool(use_sam3)
+    key = (bool(use_sam3), bool(use_yoloe))
     sem = _SEM_CACHE.get(key)
     if sem is None:
         class _EmptyClosed(TargetLocator):
@@ -132,7 +135,7 @@ def _get_semantic_locator(use_sam3: bool):
             def detect_named(self, f, n):
                 return []
         sem = build_semantic_locator(closed=_EmptyClosed(), use_sam3=use_sam3,
-                                     use_yoloe=True, sam3_verbose=False)
+                                     use_yoloe=use_yoloe, sam3_verbose=False)
         _SEM_CACHE[key] = sem
     return sem
 

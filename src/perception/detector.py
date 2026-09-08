@@ -578,6 +578,36 @@ class OpenVocabLocator(TargetLocator):
         return els
 
 
+def _nms_merge(elements: List[Element], iou_thr: float = 0.5) -> List[Element]:
+    """按 bbox IoU 去重：与已有框重叠超过阈值的只保留 conf 更高者（P0-3）。
+
+    不依赖外部库，纯几何实现，保证合并 SAM3/YOLOE 结果时不重复出框。
+    """
+    if not elements:
+        return []
+    keep: List[Element] = []
+    for e in elements:
+        x1, y1, x2, y2 = e.bbox
+        a = max(0.0, (x2 - x1) * (y2 - y1))
+        replaced = False
+        for idx, k in enumerate(keep):
+            kx1, ky1, kx2, ky2 = k.bbox
+            ix1, iy1 = max(x1, kx1), max(y1, ky1)
+            ix2, iy2 = min(x2, kx2), min(y2, ky2)
+            iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+            inter = iw * ih
+            kb = max(0.0, (kx2 - kx1) * (ky2 - ky1))
+            union = a + kb - inter
+            if union > 0 and inter / union > iou_thr:
+                if e.conf > k.conf:
+                    keep[idx] = e          # 同位置更可信的覆盖
+                replaced = True
+                break
+        if not replaced:
+            keep.append(e)
+    return keep
+
+
 class SemanticLocator(TargetLocator):
     """语义增强定位器：ScreenParser（闭集 55 类，UI 域最优）为主，
     需要按 LLM 语义名找未知元素时，逐级降级：
@@ -601,7 +631,12 @@ class SemanticLocator(TargetLocator):
             return []
 
     def detect_named(self, frame, names: List[str]) -> List[Element]:
-        """LLM 指定语义名找元素：SAM3 → YOLOE → 闭集，任一级真出结果才返回。"""
+        """LLM 指定语义名找元素：SAM3 → YOLOE → 闭集，三级结果 union + IoU 去重。
+
+        P0-3：SAM3 命中不再 early-return 丢掉 YOLOE 的补充召回。三级都跑（都容错），
+        合并后用 bbox 重叠去重（同位置只留 conf 更高者）；三级全空才退闭集。
+        """
+        merged: List[Element] = []
         for loc in (self.sam3, self.open_vocab):
             if not loc:
                 continue
@@ -610,7 +645,9 @@ class SemanticLocator(TargetLocator):
             except Exception:
                 got = []
             if got:
-                return got
+                merged = _nms_merge(merged + got)
+        if merged:
+            return merged
         return self.detect(frame)  # 退回闭集，靠 LLM 从 55 类里挑
 
 
