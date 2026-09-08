@@ -19,6 +19,7 @@ ui_server.py —— MGA 控制台后端（零第三方依赖，纯标准库）
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -337,7 +338,72 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             return
 
+        if u.path == "/api/mga/perceive":
+            self._mga_perceive(body)
+            return
+        if u.path == "/api/mga/act":
+            self._mga_act(body)
+            return
+
         self._json({"ok": False, "msg": "not found"}, 404)
+
+    # ---------------- MGA 桥接端点（林梦梦经此派发桌面 ComputerUse 任务） ----------------
+    def _decode_dataurl(self, dataUrl):
+        """data:image/png;base64,xxxx → numpy RGB 数组；失败返回 None（不抛）。"""
+        if not dataUrl or ',' not in dataUrl:
+            return None
+        try:
+            import io
+            import numpy as np
+            from PIL import Image
+            _, b64 = dataUrl.split(',', 1)
+            raw = base64.b64decode(b64)
+            img = Image.open(io.BytesIO(raw)).convert('RGB')
+            return np.asarray(img)
+        except Exception:
+            return None
+
+    def _mga_perceive(self, body):
+        """接收屏帧 + 语义 goal → 调 MGA 感知管线返回元素。降级容错：
+        无 numpy/PIL/ScreenParser/权重 时返回 unavailable，不崩链路。"""
+        goal = str(body.get('goal') or '')
+        dataUrl = body.get('frame') or body.get('dataUrl') or ''
+        frame = self._decode_dataurl(dataUrl) if dataUrl else None
+        if frame is None:
+            self._json({"ok": False, "error": "frame 解码失败（需 dataUrl/base64 PNG）"})
+            return
+        try:
+            from perception.desktop_perceive import perceive_pipeline
+            scene = perceive_pipeline(frame, goal=goal, l2_bridge=None)
+            els = [{
+                "id": e.id, "label": e.label,
+                "bbox": [int(v) for v in e.bbox],
+                "conf": round(float(e.conf), 3),
+                "backend": e.backend,
+            } for e in (scene.elements or [])]
+            self._json({"ok": True, "elements": els,
+                        "active_backend": scene.active_backend, "goal": goal})
+        except Exception as ex:
+            self._json({"ok": True, "elements": [], "active_backend": "unavailable",
+                        "goal": goal,
+                        "note": f"感知降级（缺依赖/权重）: {type(ex).__name__}: {ex}"})
+
+    def _mga_act(self, body):
+        """接收执行计划：默认 dry-run 返回将执行步骤，危险动作不自动执行。
+        真执行需调用方显式 real=true 且本机有显示；此处不落地 pyautogui，
+        符合「危险动作需确认」硬约束（真执行由 MGA 的 main --real 决策回路负责）。"""
+        plan = body.get('plan') or {}
+        action = str(plan.get('action') or plan.get('kind') or '')
+        coords = plan.get('coords') or plan.get('bbox') or None
+        real = bool(body.get('real'))
+        if not action:
+            self._json({"ok": False, "error": "缺少 action"})
+            return
+        self._json({
+            "ok": True, "action": action, "coords": coords,
+            "executed": False, "dry_run": not real,
+            "will": f"将执行 {action}" + (f" @ {coords}" if coords else ""),
+        })
 
 
 def main():
