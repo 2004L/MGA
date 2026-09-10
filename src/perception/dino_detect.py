@@ -138,8 +138,9 @@ class DeepDinoDetector:
             return (None, [])
         try:
             H, W = scene.shape[:2]
-            results = self._model.predict(
-                scene, imgsz=self.imgsz, conf=self.conf,
+            from perception.device import predict   # 统一收敛 device，杜绝隐式选 CUDA
+            results = predict(
+                self._model, scene, imgsz=self.imgsz, conf=self.conf,
                 iou=self.iou, verbose=False)
             dino_x = None
             obs: list = []

@@ -7,8 +7,11 @@ m2_screenparser_verify.py —— M2 真通验证：ScreenParser 主视觉通道�
   · desktop_perceive.perceive_pipeline 的 L1 标 active_backend="screenparser"
 
 环境坑（仅本沙箱）：torch(cu132) + torchvision(CPU) 混装 → CUDA 后端 NMS 缺失。
-验证脚本强制 device="cpu"（既规避坑，又验证 detector.py 声明的「CPU 可跑」）。
-真实 GPU 机器不受此影响（共享 detector.py 不改）。
+**历史教训**：本脚本曾 monkey-patch 掉 _ensure 强制 CPU（旧注释「既规避坑」），
+导致验收走的是与生产不同的路径 —— 验收通过但生产路径照崩，主通道静默降级成
+CV 找方块，长期未被发现。现在 detector.py 的 ScreenParserBackend 已默认
+device='cpu'，**本脚本不再 patch，必须与生产走完全相同路径**，否则结论无效。
+真实 GPU 机器可显式传 device="cuda"（需 torchvision 配套）。
 
 定量召回（>90%）需真实桌面截图 + ground truth，沙箱无此条件；
 此处只证「模型加载 + 推理 + 元素产出」端到端通，量化验收留真机（M2 验收关）。
@@ -72,20 +75,11 @@ def main() -> int:
         print(f"    {lbl:16s} bbox={bb} conf={c:.2f}")
 
     # ---- 完整管线：perceive_pipeline 的 L1 应标 screenparser ----
-    # 让 ScreenParserBackend 也走 CPU（本沙箱坑；共享 detector.py 不改）
-    import detector
-    _orig = detector.ScreenParserBackend._ensure
-    def _ensure_cpu(self):
-        if self._model is None:
-            from ultralytics import YOLO as _Y
-            self._model = _Y(resolve_weights(self.model_name))
-            try:
-                self._model.to("cpu")
-            except Exception:
-                pass
-        return self._model
-    detector.ScreenParserBackend._ensure = _ensure_cpu
-
+    # E 修复（重要）：以前这里 monkey-patch 掉 ScreenParserBackend._ensure 强制 CPU，
+    # 注释还写着「既规避坑」—— 结果**验收走的是另一条路径**：验收绿、生产照崩
+    # （CUDA NMS），主通道静默降级成 CV 找方块，藏了很久。
+    # 现在生产侧已默认 device='cpu'，这里**不再 patch**，必须与生产走完全相同的
+    # 调用路径，否则验收结论无效。
     sc = perceive_pipeline(sample, goal="点击确定")
     print(f"\n[perceive_pipeline] active_backend={sc.active_backend} 元素数={len(sc.elements)}")
     ok = sc.active_backend == "screenparser" and len(sc.elements) >= 0

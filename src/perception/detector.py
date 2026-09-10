@@ -547,23 +547,30 @@ class OpenVocabLocator(TargetLocator):
     def _ensure(self):
         if self._model is None:
             from ultralytics import YOLO
-            self._model = YOLO(self.model_name)
+            # 必须经 resolve_weights：本地 blobs/weights/ 优先，缺失才走 HF 镜像。
+            # 之前直接 YOLO(self.model_name) 绕过了权重解析 → 本地权重永远找不到，
+            # 该通路必失败（github/HF 直连在本机不可达）。
+            from perception.weights import resolve_weights
+            self._model = YOLO(resolve_weights(self.model_name))
         return self._model
 
     def detect(self, frame) -> List[Element]:
         """免提示模式：依赖模型内置词汇自动识别（如 YOLOE 的 1200+ 类）。"""
+        from perception.device import predict   # 统一收敛 device，杜绝隐式选 CUDA
         model = self._ensure()
-        results = model.predict(frame, imgsz=self.imgsz, conf=self.conf, iou=self.iou)
+        results = predict(model, frame, imgsz=self.imgsz, conf=self.conf, iou=self.iou)
         return self._to_elements(model, results)
 
     def detect_named(self, frame, names: List[str]) -> List[Element]:
         """文本提示模式：按 LLM 给的语义名找元素，框直接带语义标签，无需 OCR。"""
+        from perception.device import predict
         model = self._ensure()
         try:
             model.set_classes(names)
-        except Exception:
-            pass  # 部分权重不支持 set_classes → 退化为免提示 detect()
-        results = model.predict(frame, imgsz=self.imgsz, conf=self.conf, iou=self.iou)
+        except Exception as e:
+            # 原本 pass 完全无声；改为留存错误供排查（退化行为不变）
+            self._set_classes_err = e
+        results = predict(model, frame, imgsz=self.imgsz, conf=self.conf, iou=self.iou)
         return self._to_elements(model, results)
 
     @staticmethod

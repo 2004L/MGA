@@ -98,8 +98,10 @@ class System1:
         try:
             self.hub.trackers.clear()
             self.hub.age.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            # 不再静默：清跟踪失败会让下一局带着脏状态开局
+            self._last_error = f"reset/trackers.clear: {type(e).__name__}: {e}"
+            print(f"  [S1] ⚠️ 重置失败：{self._last_error}")
 
     # ---------------- 决策（每帧调用，必须快） ----------------
     def decide(self, live: Sequence[Tuple], t: float) -> Decision:
@@ -197,5 +199,7 @@ class System1:
             corr[0] = float(np.clip(react_delta, -DELTA_CLAMP, DELTA_CLAMP))
             self.residual.train_sample(state, corr)
             self.n_samples += 1
-        except Exception:
-            pass
+        except Exception as e:
+            # 不再静默：残差训练失败 = S1 永远学不会，却表现为"一直要靠 S2 兜底"
+            self._last_error = f"learn_from_correction: {type(e).__name__}: {e}"
+            print(f"  [S1] ⚠️ 残差训练失败：{self._last_error}")

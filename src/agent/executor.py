@@ -53,21 +53,27 @@ class Executor:
         if self.dry or self.wm is None:
             return None
         title = title_contains or self.focus_title
+        # 不再静默：聚焦失败 = 后续所有按键全部失效却零报错（本函数上方注释明写
+        # 「按键能不能生效全看这一步」）。这里记录 + 上报，让故障至少可见。
+        self.last_focus_error = None
         try:
             hwnd = self.wm.focus_by_title(title)
             if hwnd:
                 self.hwnd = hwnd
                 return hwnd
-        except Exception:
-            pass
+        except Exception as e:
+            self.last_focus_error = f"focus_by_title: {type(e).__name__}: {e}"
         try:
             hwnd = self.wm.find(title)
             if hwnd:
                 self.wm.focus(hwnd)
                 self.hwnd = hwnd
                 return hwnd
-        except Exception:
-            pass
+        except Exception as e:
+            add = f"find+focus: {type(e).__name__}: {e}"
+            self.last_focus_error = f"{self.last_focus_error} | {add}" if self.last_focus_error else add
+        if self.last_focus_error:
+            print(f"  [执行] ⚠️ 聚焦失败（后续按键可能全部无效）：{self.last_focus_error}")
         return None
 
     # ---------------- 动作执行 ----------------

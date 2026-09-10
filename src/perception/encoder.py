@@ -99,7 +99,8 @@ class RealScreenEncoder(VisionEncoder):
     def _extract_from_model(self, image) -> np.ndarray:
         if self._model_kind == "yolo":
             # YOLO 接受路径或 numpy 数组；直接出检测框
-            res = self._model.predict(image, conf=self.conf, verbose=False)[0]
+            from perception.device import predict   # 统一收敛 device，杜绝隐式选 CUDA
+            res = predict(self._model, image, conf=self.conf, verbose=False)[0]
             boxes = []
             if res.boxes is not None:
                 for b in res.boxes:

@@ -95,7 +95,8 @@ def _try_screenparser(frame: np.ndarray) -> List[UIElement]:
     return [_to_ui(e, "screenparser") for e in els]
 
 
-def _try_yoloe_open(frame: np.ndarray, names=None, use_sam3: bool = True) -> List[UIElement]:
+def _try_yoloe_open(frame: np.ndarray, names=None, use_sam3: bool = True,
+                    degraded: Optional[list] = None) -> List[UIElement]:
     """开放词汇升级通道：SAM3（概念分割+mask 质心）→ YOLOE，按 LLM 给的语义名找未知元素。
 
     现在走 SemanticLocator 三级（SAM3 → YOLOE → 闭集），但闭集(ScreenParser)已由 L1 处理，
@@ -109,7 +110,11 @@ def _try_yoloe_open(frame: np.ndarray, names=None, use_sam3: bool = True) -> Lis
     sem = _get_semantic_locator(use_sam3)
     try:
         els = sem.detect_named(frame, names) if names else sem.detect(frame)
-    except Exception:
+    except Exception as e:
+        # 原为静默 return []（故障完全不可见）。现在把错误写回 degraded，
+        # 由 perceive_pipeline 汇总进 scene.meta['degraded']。
+        if degraded is not None:
+            degraded.append(f"L1.5/semantic-inner: {type(e).__name__}: {e}")
         return []
     return [_to_ui(e, "semantic") for e in els]
 
@@ -192,16 +197,62 @@ def _try_cv(frame: np.ndarray) -> List[UIElement]:
 # ---------------------------------------------------------------------------
 # 主入口：三级降级管线（命中即停，标 active_backend）
 # ---------------------------------------------------------------------------
+class _SemanticTimeout(Exception):
+    """语义通路(SAM3)等待超时。"""
+
+
+def _run_with_timeout(fn, timeout: float):
+    """在后台线程执行 fn，最多等 timeout 秒；超时抛 _SemanticTimeout。
+
+    刻意**不杀线程**：SAM3 走常驻 worker 子进程（.venv-sam3），强杀会让 worker
+    停在半截状态、下次调用读到上一次的脏响应。这里只做「停止等待 + 丢弃结果」，
+    worker 自己跑完即复位，后续仍可复用（避免重加载 3.4GB 模型）。
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+    ex = ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = ex.submit(fn)
+        try:
+            return fut.result(timeout=timeout)
+        except _FutTimeout:
+            fut.cancel()
+            raise _SemanticTimeout()
+        except Exception:
+            raise
+    finally:
+        # 关键：必须 shutdown(wait=False)。若用 `with ThreadPoolExecutor(...)`，
+        # 退出时会 wait=True 阻塞到线程跑完（SAM3 实测 13–43s），超时闸等于白设。
+        ex.shutdown(wait=False)
+
+
 def perceive_pipeline(frame: np.ndarray, goal: str = "",
                       l2_bridge=None,
                       force_backend: Optional[str] = None,
-                      use_sam3: bool = True) -> DesktopScene:
+                      use_sam3: bool = True,
+                      time_budget: float = 3.0) -> DesktopScene:
     """把桌面帧变成 DesktopScene。
 
     force_backend: 测试钩子（"yoloe"/"llm"/"cv"）强制走某一级，跳过降级。
     l2_bridge:     提供则 L1 失败尝试 L2；None 则跳过 L2（如沙箱无 API key）。
     use_sam3:      开放词汇升级通道是否启用 SAM3（默认开；关则只用 YOLOE）。
+    time_budget:   语义通路(SAM3)的等待上限（秒，默认 3.0）。
+                   实测 SAM3 命中 13.2s、未命中 42.7s，远超联动侧 16s fuse 预算；
+                   超时即停止等待并降级，不再把整条链拖死。
+                   任何一级失败都会记进 scene.meta['degraded']，**不再静默**。
     """
+    import time
+    t0 = time.time()
+    degraded: list = []
+
+    def _left() -> float:
+        return time_budget - (time.time() - t0)
+
+    def _meta(extra: dict) -> dict:
+        m = dict(extra)
+        if degraded:
+            m["degraded"] = list(degraded)
+        return m
+
     # 测试钩子：直接指定通路
     if force_backend == "llm" and l2_bridge is not None:
         els = _try_llm(frame, goal, l2_bridge)
@@ -216,28 +267,37 @@ def perceive_pipeline(frame: np.ndarray, goal: str = "",
     l1_els = []
     try:
         l1_els = _try_screenparser(frame)
-    except Exception:
-        l1_els = []  # 主通道空窗（torch/ultralytics 缺失或权重 404）：降级 L1.5
+    except Exception as e:
+        # 不再静默：记录「哪一级 + 什么错」。降级可以保留，但必须留痕，
+        # 否则症状只会表现为「功能没坏、只是没结果」，排查成本极高。
+        degraded.append(f"L1/screenparser: {type(e).__name__}: {e}")
+        l1_els = []
     if l1_els:
         # 主通道已检出 UI 元素 → 直接返回，不跑 SAM3（省成本）
         return DesktopScene(frame=frame, elements=l1_els, active_backend="screenparser",
                             confidence=float(np.mean([e.conf for e in l1_els])),
-                            meta={"visual": "screenparser"})
+                            meta=_meta({"visual": "screenparser"}))
 
     # L1.5：开放词汇升级（SAM3 → YOLOE），补 ScreenParser 词汇外的语义名。
     # 触发条件：显式 force_backend=="yoloe"，或（启用 SAM3 且 goal 给了语义目标）。
     # 不无谓触发：L1 未命中但 goal 为空时不跑 SAM3（SAM3 需提示词，空跑是浪费）。
     want_semantic = force_backend == "yoloe" or (use_sam3 and goal)
     if want_semantic:
+        # time_budget 只约束「等 SAM3 多久」，不把 L1 的耗时算进来 ——
+        # 冷启动时 L1 要加载模型（约 4–5s），不应吃掉语义预算。
         try:
-            els = _try_yoloe_open(frame, names=[goal] if goal else None,
-                                  use_sam3=use_sam3)
+            els = _run_with_timeout(
+                lambda: _try_yoloe_open(frame, names=[goal] if goal else None,
+                                        use_sam3=use_sam3, degraded=degraded),
+                timeout=max(0.1, time_budget))
             if els:
                 return DesktopScene(frame=frame, elements=els, active_backend="semantic",
                                     confidence=float(np.mean([e.conf for e in els])),
-                                    meta={"semantic": "sam3+yoloe"})
-        except Exception:
-            pass
+                                    meta=_meta({"semantic": "sam3+yoloe"}))
+        except _SemanticTimeout:
+            degraded.append(f"L1.5/semantic: 等待超过 {time_budget:.1f}s，已降级")
+        except Exception as e:
+            degraded.append(f"L1.5/semantic: {type(e).__name__}: {e}")
 
     # L2：多模态 LLM（仅当有 bridge；否则跳过，直接 L3）
     if l2_bridge is not None:
@@ -245,15 +305,15 @@ def perceive_pipeline(frame: np.ndarray, goal: str = "",
             els = _try_llm(frame, goal, l2_bridge)
             if els:
                 return DesktopScene(frame=frame, elements=els, active_backend="llm",
-                                    confidence=1.0)
-        except Exception:
-            pass
+                                    confidence=1.0, meta=_meta({}))
+        except Exception as e:
+            degraded.append(f"L2/llm: {type(e).__name__}: {e}")
 
     # L3：CV 兜底（最后一道，保证链路不崩）
     els = _try_cv(frame)
     return DesktopScene(frame=frame, elements=els, active_backend="cv",
                         confidence=0.5 if els else 0.0,
-                        meta={"note": "L1/L2 不可用，已降 CV 兜底"})
+                        meta=_meta({"note": "L1/L2 不可用，已降 CV 兜底"}))
 
 
 if __name__ == "__main__":

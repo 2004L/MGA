@@ -354,8 +354,9 @@ class System2:
             if k in knobs:
                 try:
                     safe_knobs[k] = float(knobs[k])
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 不再静默：knob 解析失败会静默丢参数，表现为"调了但没生效"
+                    print(f"  [S2] ⚠️ knob {k} 解析失败，已忽略：{type(e).__name__}: {e}")
         return {
             "diagnosis": str(obj.get("diagnosis", ""))[:200],
             "fix": fix,

@@ -211,8 +211,10 @@ class AgentOrchestrator:
                     self.s1.hub.dino_x = s.dino_x
                     self._dino_refined = True
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                # 不再静默：等待游戏元素时出错若无声，会表现为"一直等不到"却查不出原因
+                if self.verbose:
+                    print(f"  [等待] ⚠️ 第 {attempt} 次探测异常：{type(e).__name__}: {e}")
             if self.exec is not None:
                 self.exec.ensure_focus()
             time.sleep(1.0)
