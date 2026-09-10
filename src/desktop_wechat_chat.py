@@ -134,8 +134,9 @@ class FileInbox(Inbox):
                 del data[contact]
                 with open(self.path, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            # 不再静默：删除联系人/记录失败若无声，会表现为"操作成功但数据还在"
+            print(f"  [wechat] ⚠️ 删除失败({self.path})：{type(e).__name__}: {e}")
 
 
 class MockInbox(Inbox):

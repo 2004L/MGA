@@ -98,8 +98,10 @@ class ExperienceMemory:
             return
         try:
             self._ms.challenge_memory(memory_id, success)
-        except Exception:
-            pass
+        except Exception as e:
+            # 不再静默：挑战(降权)失败 = 错误经验不会被降权，会一直被复用，
+            # 表现为"老犯同一个错"却看不出记忆没更新
+            print(f"  [memory] ⚠️ 经验降权失败(id={memory_id})：{type(e).__name__}: {e}")
 
     def stats(self) -> Dict[str, Any]:
         try:

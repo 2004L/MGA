@@ -223,8 +223,11 @@ def verify_realtime_chain() -> None:
     proj = build_projector("mlp", enc_dim=64, out_dim=64)
     try:
         proj.load(os.path.join("blobs", "projector_mlp.pkl"))
-    except Exception:
-        pass
+    except Exception as e:
+        # 不再静默：权重加载失败 = 用的是随机初始化的 projector，
+        # 表现"能跑通但效果不对"，极易误判成模型问题
+        print(f"  [main] ⚠️ projector 权重加载失败（将使用随机初始化）："
+              f"{type(e).__name__}: {e}")
     llm = build_llm("mock")
 
     shot = np.random.randint(0, 255, (480, 640, 3), dtype="uint8")  # 模拟真实截图

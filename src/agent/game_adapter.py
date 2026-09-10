@@ -97,8 +97,11 @@ class DinoAdapter(GameAdapter):
             try:
                 self.executor.ensure_focus()
                 time.sleep(0.4)
-            except Exception:
-                pass
+            except Exception as e:
+                # 不再静默：注释明写「不聚焦就截到别的窗口 → 定位必失败」。
+                # 这里失败等于后续定位注定失败，必须留痕。
+                print(f"  [定位] ⚠️ 聚焦游戏窗口失败（可能截到别的窗口）："
+                      f"{type(e).__name__}: {e}")
         try:
             full = self._grab_full()
             if full is None:
@@ -111,8 +114,9 @@ class DinoAdapter(GameAdapter):
                 self.region = tuple(reg)
                 try:
                     self.D.save_region(self.region)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 不再静默：保存失败 = 下次冷启动无法回落，定位又要重来
+                    print(f"  [定位] ⚠️ 游戏区保存失败：{type(e).__name__}: {e}")
                 if self.verbose:
                     print(f"  [定位] 自动识别游戏区={self.region}")
                 return self.region
@@ -126,8 +130,8 @@ class DinoAdapter(GameAdapter):
                 self.region = tuple(saved)
                 print(f"  [定位] 回落到上次保存的区域={self.region}")
                 return self.region
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [定位] ⚠️ 读取上次保存区域失败：{type(e).__name__}: {e}")
         return self.region
 
     def _grab_full(self) -> Optional[np.ndarray]:

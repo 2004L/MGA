@@ -199,8 +199,10 @@ class DesktopBrain:
                 return None
             if "整理" in g or "移动" in g:
                 return None
-        except Exception:
-            pass
+        except Exception as e:
+            # 不再静默：目标解析异常若无声，会表现为"这个需求不支持"却查不出原因
+            self._last_error = f"goal-parse: {type(e).__name__}: {e}"
+            print(f"  [desktop_agent] ⚠️ 目标解析异常：{self._last_error}")
         return None
 
     # ---------------- 失败反思 ----------------
@@ -216,8 +218,11 @@ class DesktopBrain:
                 steps = self._parse_steps(raw)
                 if steps:
                     return steps[0]
-            except Exception:
-                pass
+            except Exception as e:
+                # 不再静默：S2 反思失败若无声，会静默退化成"原样重试"，
+                # 表现为反复重试同一错误动作却没人知道 LLM 根本没生效
+                print(f"  [desktop_agent] ⚠️ S2 反思失败，退化为原样重试："
+                      f"{type(e).__name__}: {e}")
         # 启发式兜底：原样重试（保留语义，交给动作级物理闸再判一次）
         return Step(failed.action, failed.note + "（S2 反思重试）", risk=failed.risk)
 
