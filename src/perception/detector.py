@@ -71,9 +71,19 @@ class ScreenParserBackend(TargetLocator):
     集成姿势：只做推理前向，不引训练栈、不反向、不碰 ultralytics 训练 API。"""
 
     def __init__(self, model_name: str = "docling-project/ScreenParser",
-                 imgsz: int = 1280, conf: float = 0.10, iou: float = 0.10):
+                 imgsz: int = 1280, conf: float = 0.10, iou: float = 0.10,
+                 device: Optional[str] = None):
         self.model_name = model_name
         self.imgsz, self.conf, self.iou = imgsz, conf, iou
+        # 推理设备：默认 CPU，不再交给 ultralytics 自动选。
+        # 原因（本机实测）：torchvision 未编译 CUDA 版 NMS，一旦 ultralytics
+        # 自动把张量放到 CUDA，predict 阶段必炸
+        #   NotImplementedError: Could not run 'torchvision::nms' with arguments
+        #   from the 'CUDA' backend
+        # 该异常发生在 L1 主通道，被上层静默吞掉后整条感知链降级成 CV 找方块，
+        # 症状是「元素全是 rect、没有任何语义标签」。ScreenParser 本就标注 CPU 可跑，
+        # 钉死 CPU 最稳；确实有可用 GPU 且 torchvision 配套时再显式传 device='cuda'。
+        self.device = device or "cpu"
         self._model = None
 
     def _ensure(self):
@@ -86,7 +96,8 @@ class ScreenParserBackend(TargetLocator):
 
     def detect(self, frame) -> List[Element]:
         model = self._ensure()
-        results = model.predict(frame, imgsz=self.imgsz, conf=self.conf, iou=self.iou)
+        results = model.predict(frame, imgsz=self.imgsz, conf=self.conf,
+                                iou=self.iou, device=self.device)
         els: List[Element] = []
         for r in results:
             for box, cls_id, conf in zip(r.boxes.xyxy, r.boxes.cls, r.boxes.conf):
