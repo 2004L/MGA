@@ -8,6 +8,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
+# 虚拟环境（依赖由 requirements.lock.txt + setup_perception.* 固化，venv 不入库）
+.venv/
+_venvs/
+venv/
+
 # 产出（体积大，按需同步）
 blobs/shots/
 blobs/weights/

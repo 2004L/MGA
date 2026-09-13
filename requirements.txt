@@ -1,0 +1,21 @@
+# MGA 视频感知层依赖
+# 第一块（supervision 结构化事件层）—— 让模型能看见 + 数据分析 + 运输给大模型
+supervision>=0.21.0
+# supervision 会拉入 numpy / opencv-python / pillow；如需桌面检测还需：
+# ultralytics   # ScreenParser / YOLO 连接器（可选）
+# 注：本机此前无 venv，安装示例：
+#   python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
+# supervision 缺失时 perception 层自动降级到类别计数唤醒（不影响链路）。
+
+# 第三块（C = Frigate NVR 采集 + MQTT 运输层）
+# paho-mqtt 是 FrigateSource.connect() 的真客户端依赖（已实测 2.1.0，兼容 1.x/2.x）。
+# 缺失时 FrigateSource 自动降级离线模式（_ingest 仍可验证链路，不崩）。
+paho-mqtt>=2.0.0
+# amqtt 仅用于真 broker 联调探针（frigate_broker_probe.py 起本地 broker），非运行时依赖。
+#   pip install amqtt   # 然后 python frigate_broker_probe.py 真跑 connect()→订阅→消息→唤醒
+
+# 真·LLM 运输桥（gate_llm_link）：零 openai SDK，用 requests 直连 OpenAI 兼容
+# chat/completions（hy3 / tokenhub）。openai SDK 可选；装了则优先用 APILLM。
+requests>=2.28.0
+# openai>=1.0.0   # 可选：装了 build_llm 的 openai/hy3 后端改走 APILLM
+

@@ -379,6 +379,41 @@ class APILLM(LLMBridge):
         return resp.choices[0].message.content or ""
 
 
+class RequestsLLM(LLMBridge):
+    """零 openai SDK 依赖的真·LLM 后端：用 requests 直连 OpenAI 兼容
+    chat/completions 接口。在受限环境（装不了 openai）下也能真调大模型，
+    is_real=True 如实标记。密钥只从入参/环境变量读，绝不写进代码或日志。"""
+
+    is_real = True
+
+    def __init__(self, model: str = "hy3", api_key: str = "", base_url: str = ""):
+        self.model, self.api_key, self.base_url = model, api_key, base_url
+
+    def respond(self, prompt: str, image=None) -> str:
+        import requests  # 懒加载，缺失即诚实报错（上层降级）
+        url = (self.base_url.rstrip("/") + "/chat/completions") if self.base_url \
+            else "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {self.api_key}",
+                   "Content-Type": "application/json"}
+        body = {"model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3}
+        resp = requests.post(url, headers=headers, json=body, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return (data.get("choices", [{}])[0].get("message", {}) or {}).get("content") or ""
+
+
+def _real_llm(model: str, api_key: str, base_url: str) -> LLMBridge:
+    """优先 APILLM（openai SDK 可用时），否则退 RequestsLLM（仅 requests）。
+    两者都是真·LLM(is_real=True)，只是依赖不同。"""
+    try:
+        import openai  # noqa: F401
+        return APILLM(model=model, api_key=api_key, base_url=base_url)
+    except Exception:
+        return RequestsLLM(model=model, api_key=api_key, base_url=base_url)
+
+
 # ---------------------------------------------------------------------------
 # 3.5 后端工厂：按 config 的 llm_backend 选择大脑（mock/ollama/openai/ultralytics）
 # ---------------------------------------------------------------------------
@@ -452,25 +487,24 @@ def build_llm(backend: str = "mock", model: str = None,
     if b in ("gpt6", "gpt-6", "gpt-6-astra"):
         # L2 兜底 grounding/反思层（桌面 CU 方案 §8）：直连 GPT-6 Astra。
         # 密钥只从环境变量/.env.local 读（_load_dotenv 已注入），绝不写代码/日志。
-        # 无 key 时不崩：APILLM 实例化成功，仅真正调用 respond 时才报网络错 → 降级 L3。
+        # 无 key 时不崩：真正调用 respond 时才报网络错 → 降级 L3。
         m = model or os.getenv("MGA_LLM_MODEL") or "gpt-6-astra"
         u = base_url or os.getenv("MGA_LLM_BASE_URL") or cfg.get("llm_base_url") or ""
         k = api_key or os.getenv("MGA_LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
-        return APILLM(model=m, api_key=k, base_url=u)
+        return _real_llm(m, k, u)
     if b in ("ollama", "openai", "api", "custom"):
         m = (model or os.getenv("MGA_LLM_MODEL") or cfg.get("llm_model")
              or ("llama3" if b == "ollama" else "gpt-4o"))
         u = (base_url or os.getenv("MGA_LLM_BASE_URL") or cfg.get("llm_base_url")
              or ("http://localhost:11434/v1" if b == "ollama" else ""))
         k = api_key or os.getenv("MGA_LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
-        return APILLM(model=m, api_key=k, base_url=u)
+        return _real_llm(m, k, u)
     if b in ("hy3", "hunyuan", "hunyuan3", "tencent"):
-        # 混元 / 其他 OpenAI 兼容模型：走 APILLM，模型名/端点/密钥从环境变量或
-        # 配置读，绝不写进代码。无 key 时不崩：调用 respond 才报网络错 → 上层降级。
+        # 混元 / 其他 OpenAI 兼容模型：模型名/端点/密钥从环境变量或配置读，绝不写进代码。
         m = model or os.getenv("MGA_LLM_MODEL") or cfg.get("llm_model") or "hy3"
         u = base_url or os.getenv("MGA_LLM_BASE_URL") or cfg.get("llm_base_url") or ""
         k = api_key or os.getenv("MGA_LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
-        return APILLM(model=m, api_key=k, base_url=u)
+        return _real_llm(m, k, u)
     raise ValueError(f"未知 llm_backend: {b}")
 
 
